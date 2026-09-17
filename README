@@ -1,1 +1,48 @@
-hek
+Both platforms auto-detect HTTP port binding from `$PORT`, so there's no "open a port" step like on a VPS — you just have to make sure your app listens on `0.0.0.0:$PORT`, which `main.py`/`Procfile` already do.
+
+## Render
+
+**1. Create the service**
+- Push the project to a GitHub repo (public or private, both work).
+- Render dashboard → **New → Blueprint** → connect the repo. Because `render.yaml` is in the repo root, Render reads it and pre-fills everything (free plan, Frankfurt region, build/start commands) — you just confirm.
+- If you'd rather not use the Blueprint flow: **New → Web Service** → connect repo → set manually:
+  - **Build Command**: `pip install -r requirements.txt`
+  - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+  - **Instance Type**: Free
+
+**2. Environment variables**
+- In the service's **Environment** tab (or the prompt during Blueprint setup), add:
+  - `ADMIN_PASSWORD` = whatever you want your first login password to be
+- `PORT` is injected automatically by Render — don't set it yourself.
+
+**3. Persistent disk / volume**
+- Not possible on Free. I checked Render's current docs directly: persistent disks can only be attached to a paid web service, private service, or background worker, and disks can only be provisioned to a service using a paid instance type. On Free, `panel.db` lives on ephemeral storage — it survives restarts but is wiped on every redeploy. Practical effect: recreate your links after each redeploy, or upgrade to Starter (~$7/mo) if that's a dealbreaker.
+
+**4. Generate a domain**
+- Render assigns `https://<service-name>.onrender.com` automatically the moment the first deploy succeeds — nothing to click. A custom domain can be added later under **Settings → Custom Domains** if you own one, with automatic TLS.
+
+**5. Ports**
+- Nothing to open manually — Render terminates TLS at its edge and forwards to whatever port your process binds via `$PORT`.
+
+**Quirk to know**: Free services spin down after 15 minutes idle and take a few seconds to wake on the next request — this is exactly what the app's built-in keep-alive ping is fighting, though Render may still spin it down during low-traffic windows regardless.
+
+## Railway
+
+**1. Create the project**
+- Railway → **New Project → Deploy from GitHub repo** → pick the repo. Railway reads the `Procfile` automatically; no build/start command fields to fill in manually (override under **Settings → Deploy** if you ever need to).
+
+**2. Environment variables**
+- Service → **Variables** tab → add `ADMIN_PASSWORD`.
+- `PORT` is injected by Railway automatically — the CLI/skill docs I checked confirm Railway injects the PORT variable and your app should bind to `0.0.0.0:$PORT`, which it already does.
+
+**3. Persistent disk / volume**
+- Railway does support volumes (unlike Render's free tier), but note this before relying on it: as of current signup terms, the trial month gives $5 of credit, and afterwards you're moved to a free tier that gives $1 of credit a month — that $1/month is thin, and a volume adds to your usage draw. To attach one: service → **Settings → Volumes → New Volume**, set a mount path like `/data`, then set `DB_PATH=/data/panel.db` as an env var (the app already reads `DB_PATH`, so no code change needed) so SQLite writes to the persistent volume instead of the ephemeral container filesystem.
+- If you skip the volume, Railway's behavior is the same as Render Free: DB resets on redeploy, survives plain restarts.
+
+**4. Generate a domain**
+- Not automatic here — service → **Settings → Networking → Generate Domain**. You'll get something like `your-app-production.up.railway.app` with TLS included.
+
+**5. Ports**
+- Same as Render: no manual opening, Railway's edge proxies to your `$PORT`.
+
+**Quirk to know**: Railway doesn't sleep idle free services the way Render does, but it also doesn't give you unlimited runway — that $1/mo credit on the free tier is small, so a single low-traffic personal tunnel is realistic, but watch the usage dashboard.
