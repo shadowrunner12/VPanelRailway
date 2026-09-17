@@ -216,12 +216,17 @@ def get_client_ip(request_or_ws) -> str:
     return client.host if client else "unknown"
 
 
-def generate_vless_link(uid: str, label: str, domain: str) -> str:
+def generate_vless_link(uid: str, label: str, address: str, sni_host: str | None = None, tag: str | None = None) -> str:
+    """address is what the client actually connects to (your domain, or a clean IP).
+    sni_host is what gets presented as the TLS SNI / WS Host header — this must stay
+    your real domain even when address is a clean IP, or the TLS handshake and the
+    platform's Host-based routing both break."""
+    sni_host = sni_host or address
     path = f"/ws/{uid}"
-    remark = f"VPN-{label}"
+    remark = f"VPN-{label}" + (f"-{tag}" if tag else "")
     return (
-        f"vless://{uid}@{domain}:443?encryption=none&security=tls&type=ws"
-        f"&host={domain}&path={path}&sni={domain}&fp=chrome&alpn=http%2F1.1"
+        f"vless://{uid}@{address}:443?encryption=none&security=tls&type=ws"
+        f"&host={sni_host}&path={path}&sni={sni_host}&fp=chrome&alpn=http%2F1.1"
         f"#{remark.replace(' ', '_')}"
     )
 
@@ -229,7 +234,8 @@ def generate_vless_link(uid: str, label: str, domain: str) -> str:
 def links_for_all_addresses(link: dict, domain: str, addresses: list[str]) -> list[str]:
     out = [generate_vless_link(link["uid"], link["label"], domain)]
     for addr in addresses:
-        out.append(generate_vless_link(link["uid"], link["label"], addr))
+        # connect to the clean IP/host, but keep SNI/Host pointed at the real domain
+        out.append(generate_vless_link(link["uid"], link["label"], addr, sni_host=domain, tag=addr))
     return out
 
 
@@ -671,19 +677,35 @@ async def list_addresses(_=Depends(require_auth)):
         return {"addresses": list(ADDRESSES)}
 
 
+def _split_addresses_blob(raw: str) -> list[str]:
+    # accepts one-per-line, comma-separated, or a mix of both
+    parts = []
+    for line in raw.splitlines():
+        parts.extend(p.strip() for p in line.split(","))
+    return [p for p in parts if p]
+
+
 @app.post("/api/addresses")
 async def add_address(request: Request, _=Depends(require_auth)):
     body = await request.json()
-    address = str(body.get("address") or "").strip()
-    if not address:
-        raise HTTPException(status_code=400, detail="address required")
+    # "addresses" (bulk, newline/comma separated) and "address" (single) both accepted
+    raw = body.get("addresses")
+    if raw is None:
+        raw = body.get("address") or ""
+    candidates = _split_addresses_blob(str(raw))
+    if not candidates:
+        raise HTTPException(status_code=400, detail="at least one address required")
     async with ADDR_LOCK:
-        if address not in ADDRESSES:
-            ADDRESSES.append(address)
+        added = 0
+        for address in candidates:
+            if address not in ADDRESSES:
+                ADDRESSES.append(address)
+                added += 1
+        if added:
             async with DB_LOCK:
-                _db.execute("INSERT OR IGNORE INTO addresses (address) VALUES (?)", (address,))
+                _db.executemany("INSERT OR IGNORE INTO addresses (address) VALUES (?)", [(a,) for a in candidates])
                 _db.commit()
-        return {"addresses": list(ADDRESSES)}
+        return {"addresses": list(ADDRESSES), "added": added}
 
 
 @app.delete("/api/addresses/{index}")
@@ -863,9 +885,10 @@ padding:8px 12px;border-radius:8px;font-size:13px;font-family:monospace}
 </div>
 </div>
 <div class="addr-list" id="addrList"></div>
-<div style="display:flex;gap:8px">
-<input id="newAddr" placeholder="e.g. 1.2.3.4 or clean.example.com"
-style="flex:1;padding:8px;border-radius:8px;border:1px solid #262a35;background:#171a23;color:#e6e6e6">
+<div style="display:flex;gap:8px;align-items:flex-start">
+<textarea id="newAddr" rows="3" placeholder="One per line, e.g.&#10;1.2.3.4&#10;5.6.7.8&#10;clean.example.com"
+style="flex:1;padding:8px;border-radius:8px;border:1px solid #262a35;background:#171a23;color:#e6e6e6;
+font-family:monospace;font-size:13px;resize:vertical"></textarea>
 <button onclick="addAddress()">Add</button>
 </div>
 </main>
@@ -1016,11 +1039,12 @@ async function loadAddresses() {
 
 async function addAddress() {
   const input = document.getElementById('newAddr');
-  const address = input.value.trim();
-  if (!address) return;
-  await api('/api/addresses', {method: 'POST', body: JSON.stringify({address})});
+  const addresses = input.value.trim();
+  if (!addresses) return;
+  const res = await api('/api/addresses', {method: 'POST', body: JSON.stringify({addresses})});
   input.value = '';
   loadAddresses();
+  if (res.added > 1) alert('Added ' + res.added + ' address(es).');
 }
 
 async function deleteAddress(i) {
