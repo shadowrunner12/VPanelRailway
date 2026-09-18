@@ -115,19 +115,3 @@ You'll get something like `your-app-production.up.railway.app`, TLS included.
 ### 5. Ports
 
 Same as Render — nothing to open manually. Railway's edge proxies to your `$PORT`.
-
-### ⚡ Quirk to Know
-
-Railway doesn't sleep idle free services the way Render does — but it also doesn't give unlimited runway. That **$1/mo credit** on the free tier is small: a single low-traffic personal tunnel is realistic, but watch the usage dashboard.
-
----
-
-## 🧭 Which Should You Pick?
-
-- **Want zero-maintenance and don't mind losing DB data on redeploy?** → **Render Free**
-- **Need your SQLite data to survive redeploys and can tolerate a tight credit budget?** → **Railway + Volume**
-- **Running something low-traffic and personal?** → Either works; Render sleeps, Railway meters credit.
-
----
-
-<sub>Both platforms handle TLS and port forwarding for you — the only real decisions are around persistence and idle behavior.</sub>
